@@ -490,8 +490,10 @@ Function Set-LdapObject {
     }
     else {
         try {
+            $RDN = $DistinguishedName.Split(',')[0]
+            $searchBase = $DistinguishedName -replace "^$($RDN),"
             $filter = "(distinguishedName=$DistinguishedName)"
-            $object = Get-LdapObject -Server $Server -SSL:$SSL -Filter $filter -Properties 'distinguishedName' -Credential $Credential -Raw
+            $object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $searchBase -Filter $filter -Properties 'distinguishedName' -Credential $Credential -Raw
             Write-Verbose "Attempting to modify object $DistinguishedName..."
             $entry = $object.GetDirectoryEntry()
             foreach ($property in $Properties.GetEnumerator()) {
@@ -553,9 +555,9 @@ Function Set-LdapObjectOwner {
     Specifies the Security Identifier (SID) of the new owner.
 
 .EXAMPLE
-    PS C:\> $sid = (New-Object Security.Principal.SecurityIdentifier (Get-LdapObject -Server DC.ADATUM.CORP -Filter "(sAMAccountName=testuser)" -Properties objectSid).objectSid,0).Value
-    PS C:\> Set-LdapObjectOwner -Server DC.ADATUM.CORP -DistinguishedName "CN=testadmin,CN=Users,DC=ADATUM,DC=CORP" -OwnerSID $sid
-    PS C:\> (New-Object -TypeName Security.AccessControl.RawSecurityDescriptor (Get-LdapObject -Server DC.ADATUM.CORP -Filter "(sAMAccountName=testadmin)" -Properties ntsecurityDescriptor).ntsecurityDescriptor,0).Owner
+    PS C:\> $sid = (New-Object Security.Principal.SecurityIdentifier (Get-LdapObject -Filter "(sAMAccountName=testuser)" -Properties objectSid).objectSid,0).Value
+    PS C:\> Set-LdapObjectOwner -DistinguishedName "CN=testadmin,CN=Users,DC=ADATUM,DC=CORP" -OwnerSID $sid
+    PS C:\> (New-Object Security.AccessControl.RawSecurityDescriptor (Get-LdapObject -Filter "(sAMAccountName=testadmin)" -Properties ntsecurityDescriptor -SecurityMasks @([DirectoryServices.SecurityMasks]::Owner)).ntsecurityDescriptor,0).Owner
 #>
 
     [CmdletBinding()]
@@ -583,12 +585,13 @@ Function Set-LdapObjectOwner {
         $Credential = [Management.Automation.PSCredential]::Empty
     )
 
-    # Get default naming context
-    $rootDSE = Get-LdapRootDSE -Server $Server
-    $defaultNC = $rootDSE.defaultNamingContext[0]
+    $RDN = $DistinguishedName.Split(',')[0]
+    $searchBase = $DistinguishedName -replace "^$($RDN),"
 
     if ($SSL) {
         try {
+            $rootDSE = Get-LdapRootDSE -Server $Server
+            $defaultNC = $rootDSE.defaultNamingContext[0]
             $domain = $defaultNC -replace 'DC=' -replace ',','.'
             [Reflection.Assembly]::LoadWithPartialName("System.DirectoryServices.Protocols") | Out-Null
             $connection = New-Object -TypeName DirectoryServices.Protocols.LdapConnection -ArgumentList "$($Server):636"
@@ -603,7 +606,7 @@ Function Set-LdapObjectOwner {
                 $connection.Bind()
             }
             $filter = "(distinguishedName=$DistinguishedName)"
-            $object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $defaultNC -Filter $filter -Properties 'ntSecurityDescriptor' -Credential $Credential -Raw
+            $object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $searchBase -Filter $filter -Properties 'ntSecurityDescriptor' -Credential $Credential -Raw
 
             Write-Verbose "Attempting to modify object $DistinguishedName..."
             $ads = New-Object -TypeName DirectoryServices.ActiveDirectorySecurity
@@ -634,7 +637,7 @@ Function Set-LdapObjectOwner {
     else {
         try {
             $filter = "(distinguishedName=$DistinguishedName)"
-            $object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $defaultNC -Filter $filter -Properties 'distinguishedName' -Credential $Credential -Raw
+            $object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $searchBase -Filter $filter -Properties 'distinguishedName' -Credential $Credential -Raw
 
             Write-Verbose "Attempting to modify object $DistinguishedName..."
             $entry = $object.GetDirectoryEntry()
@@ -748,12 +751,13 @@ Function Set-LdapObjectAcl {
         }
     }
 
-    # Get default naming context
-    $rootDSE = Get-LdapRootDSE -Server $Server
-    $defaultNC = $rootDSE.defaultNamingContext[0]
+    $RDN = $DistinguishedName.Split(',')[0]
+    $searchBase = $DistinguishedName -replace "^$($RDN),"
 
     if ($SSL) {
         try {
+            $rootDSE = Get-LdapRootDSE -Server $Server
+            $defaultNC = $rootDSE.defaultNamingContext[0]
             $domain = $defaultNC -replace 'DC=' -replace ',','.'
             [Reflection.Assembly]::LoadWithPartialName("System.DirectoryServices.Protocols") | Out-Null
             $connection = New-Object -TypeName DirectoryServices.Protocols.LdapConnection -ArgumentList "$($Server):636"
@@ -768,7 +772,7 @@ Function Set-LdapObjectAcl {
                 $connection.Bind()
             }
             $filter = "(distinguishedName=$DistinguishedName)"
-            $object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $defaultNC -Filter $filter -Properties 'ntSecurityDescriptor' -Credential $Credential -Raw
+            $object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $searchBase -Filter $filter -Properties 'ntSecurityDescriptor' -Credential $Credential -Raw
 
             Write-Verbose "Attempting to modify object $DistinguishedName..."
             $ads = New-Object -TypeName DirectoryServices.ActiveDirectorySecurity
@@ -804,7 +808,7 @@ Function Set-LdapObjectAcl {
     else {
         try {
             $filter = "(distinguishedName=$DistinguishedName)"
-            $object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $defaultNC -Filter $filter -Properties 'distinguishedName' -Credential $Credential -Raw
+            $object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $searchBase -Filter $filter -Properties 'distinguishedName' -Credential $Credential -Raw
 
             Write-Verbose "Attempting to modify object $DistinguishedName..."
             $entry = $object.GetDirectoryEntry()
@@ -924,7 +928,11 @@ Function Local:Get-LdapObject {
         [Management.Automation.PSCredential]
         [Management.Automation.Credential()]
         $Credential = [Management.Automation.PSCredential]::Empty,
-    
+
+        [ValidateNotNullOrEmpty()]
+        [DirectoryServices.SecurityMasks[]]
+        $SecurityMasks,
+
         [Switch]
         $Raw
     )
@@ -971,6 +979,10 @@ Function Local:Get-LdapObject {
                 }
                 $pageRequestControl = New-Object -TypeName DirectoryServices.Protocols.PageResultRequestControl -ArgumentList $PageSize
                 $request.Controls.Add($pageRequestControl) | Out-Null
+                if ($SecurityMasks) {
+                    $sdFlagsControl = New-Object -TypeName DirectoryServices.Protocols.SecurityDescriptorFlagControl -ArgumentList $SecurityMasks
+                    $request.Controls.Add($sdFlagsControl) | Out-Null
+                }
                 $response = $searcher.SendRequest($request)
                 while ($true) {
                     $response = $searcher.SendRequest($request)
@@ -1001,6 +1013,9 @@ Function Local:Get-LdapObject {
                 $searcher.filter = $Filter
                 $propertiesToLoad = $Properties | ForEach-Object {$_.Split(',')}
                 $searcher.PropertiesToLoad.AddRange($propertiesToLoad) | Out-Null
+                if ($SecurityMasks) {
+                    $searcher.SecurityMasks = $SecurityMasks
+                }
                 $results = $searcher.FindAll()
             }
         }
@@ -1249,11 +1264,9 @@ Function Local:New-LdapObject {
 
     if ($SSL) {
         try {
-            # Get default naming context
             $rootDSE = Get-LdapRootDSE -Server $Server
             $defaultNC = $rootDSE.defaultNamingContext[0]
             $domain = $defaultNC -replace 'DC=' -replace ',','.'
-
             [Reflection.Assembly]::LoadWithPartialName("System.DirectoryServices.Protocols") | Out-Null
             $connection = New-Object -TypeName DirectoryServices.Protocols.LdapConnection -ArgumentList "$($Server):636"
             $connection.SessionOptions.SecureSocketLayer = $true
