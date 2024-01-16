@@ -444,13 +444,12 @@ Function Set-LdapObject {
         $Credential = [Management.Automation.PSCredential]::Empty
     )
 
+    $rootDSE = Get-LdapRootDSE -Server $Server
+    $defaultNC = $rootDSE.defaultNamingContext[0]
+
     if ($SSL) {
         try {
-            # Get default naming context
-            $rootDSE = Get-LdapRootDSE -Server $Server
-            $defaultNC = $rootDSE.defaultNamingContext[0]
             $domain = $defaultNC -replace 'DC=' -replace ',','.'
-
             [Reflection.Assembly]::LoadWithPartialName("System.DirectoryServices.Protocols") | Out-Null
             $connection = New-Object -TypeName DirectoryServices.Protocols.LdapConnection -ArgumentList "$($Server):636"
             $connection.SessionOptions.SecureSocketLayer = $true
@@ -490,8 +489,13 @@ Function Set-LdapObject {
     }
     else {
         try {
-            $RDN = $DistinguishedName.Split(',')[0]
-            $searchBase = $DistinguishedName -replace "^$($RDN),"
+            if ($DistinguishedName -eq $defaultNC) {
+                $searchBase = $defaultNC
+            }
+            else {
+                $RDN = $DistinguishedName.Split(',')[0]
+                $searchBase = $DistinguishedName -replace "^$($RDN),"
+            }
             $filter = "(distinguishedName=$DistinguishedName)"
             $object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $searchBase -Filter $filter -Properties 'distinguishedName' -Credential $Credential -Raw
             Write-Verbose "Attempting to modify object $DistinguishedName..."
@@ -585,13 +589,19 @@ Function Set-LdapObjectOwner {
         $Credential = [Management.Automation.PSCredential]::Empty
     )
 
-    $RDN = $DistinguishedName.Split(',')[0]
-    $searchBase = $DistinguishedName -replace "^$($RDN),"
+    $rootDSE = Get-LdapRootDSE -Server $Server
+    $defaultNC = $rootDSE.defaultNamingContext[0]
+
+    if ($DistinguishedName -eq $defaultNC) {
+        $searchBase = $defaultNC
+    }
+    else {
+        $RDN = $DistinguishedName.Split(',')[0]
+        $searchBase = $DistinguishedName -replace "^$($RDN),"
+    }
 
     if ($SSL) {
         try {
-            $rootDSE = Get-LdapRootDSE -Server $Server
-            $defaultNC = $rootDSE.defaultNamingContext[0]
             $domain = $defaultNC -replace 'DC=' -replace ',','.'
             [Reflection.Assembly]::LoadWithPartialName("System.DirectoryServices.Protocols") | Out-Null
             $connection = New-Object -TypeName DirectoryServices.Protocols.LdapConnection -ArgumentList "$($Server):636"
@@ -751,13 +761,19 @@ Function Set-LdapObjectAcl {
         }
     }
 
-    $RDN = $DistinguishedName.Split(',')[0]
-    $searchBase = $DistinguishedName -replace "^$($RDN),"
+    $rootDSE = Get-LdapRootDSE -Server $Server
+    $defaultNC = $rootDSE.defaultNamingContext[0]
+
+    if ($DistinguishedName -eq $defaultNC) {
+        $searchBase = $defaultNC
+    }
+    else {
+        $RDN = $DistinguishedName.Split(',')[0]
+        $searchBase = $DistinguishedName -replace "^$($RDN),"
+    }
 
     if ($SSL) {
         try {
-            $rootDSE = Get-LdapRootDSE -Server $Server
-            $defaultNC = $rootDSE.defaultNamingContext[0]
             $domain = $defaultNC -replace 'DC=' -replace ',','.'
             [Reflection.Assembly]::LoadWithPartialName("System.DirectoryServices.Protocols") | Out-Null
             $connection = New-Object -TypeName DirectoryServices.Protocols.LdapConnection -ArgumentList "$($Server):636"
@@ -939,7 +955,6 @@ Function Local:Get-LdapObject {
 
     Begin {
         if ((-not $SearchBase) -or $SSL) {
-            # Get default naming context
             try {
                 $rootDSE = Get-LdapRootDSE -Server $Server
                 $defaultNC = $rootDSE.defaultNamingContext[0]
@@ -1113,7 +1128,6 @@ Function Local:Get-LdapObjectAcl {
 
     Begin {
         if ((-not $SearchBase) -or $SSL) {
-            # Get default naming context
             try {
                 $rootDSE = Get-LdapRootDSE -Server $Server
                 $defaultNC = $rootDSE.defaultNamingContext[0]
