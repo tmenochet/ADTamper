@@ -287,6 +287,282 @@ Function New-RogueAccount {
     }
 }
 
+Function New-DomainDnsRecord {
+<#
+.SYNOPSIS
+    Create a new DNS record in a given Active Directory domain.
+
+    Author: Timothee MENOCHET (@_tmenochet)
+
+.DESCRIPTION
+    New-DomainDnsRecord adds a DNS node object to an Active Directory-Integrated DNS (ADIDNS) zone.
+
+.PARAMETER Server
+    Specifies the domain controller to query.
+
+.PARAMETER SSL
+    Use SSL connection to LDAP server.
+
+.PARAMETER Credential
+    Specifies the privileged account to use.
+
+.PARAMETER RecordType
+    Specifies the DNS record type, defaults to A.
+
+.PARAMETER Name
+    Specifies the DNS record name.
+
+.PARAMETER Data
+    Specifies the DNS record data, typically the destination IP address.
+
+.PARAMETER ZoneName
+    Specifies the DNS zone, defaults to Active Directory domain name.
+
+.PARAMETER Static
+    Creates a static record instead of a dynamic one.
+
+.EXAMPLE
+    PS C:\> New-DomainDnsRecord -Server DC.ADATUM.CORP -Credential 'ADATUM\testadmin' -DnsName test -DnsData "192.168.1.200"
+#>
+
+    [CmdletBinding()]
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server = $Env:USERDNSDOMAIN,
+
+        [Switch]
+        $SSL,
+
+        [ValidateNotNullOrEmpty()]
+        [Management.Automation.PSCredential]
+        [Management.Automation.Credential()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [ValidateSet("A","AAAA","CNAME","DNAME","MX","NS","PTR","SRV","TXT")]
+        [String]
+        $RecordType = "A",
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Name,
+
+        [ValidateScript({$_.Length -le 255})]
+        [String]
+        $Data,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $ZoneName,
+
+        [Switch]
+        $Static
+    )
+
+    Begin {
+        Function Local:New-DNSNameArray {
+            Param ([String] $Name)
+            $character_array = $Name.ToCharArray()
+            [Array] $index_array = 0..($character_array.Count - 1) | Where-Object {$character_array[$_] -eq '.'}
+            if($index_array.Count -gt 0) {
+                $name_start = 0
+                ForEach ($index in $index_array) {
+                    $name_end = $index - $name_start
+                    [Byte[]] $name_array += $name_end
+                    [Byte[]] $name_array += [Text.Encoding]::UTF8.GetBytes($Name.Substring($name_start,$name_end))
+                    $name_start = $index + 1
+                }
+                [Byte[]] $name_array += ($Name.Length - $name_start)
+                [Byte[]] $name_array += [Text.Encoding]::UTF8.GetBytes($Name.Substring($name_start))
+            }
+            else {
+                [Byte[]] $name_array = $Name.Length
+                [Byte[]] $name_array += [Text.Encoding]::UTF8.GetBytes($Name.Substring($name_start))
+            }
+            return $name_array
+        }
+
+        Function Local:New-PacketDNSSOAQuery {
+            Param ([String] $Name)
+            [Byte[]] $type = 0x00,0x06
+            [Byte[]] $name = (New-DNSNameArray $Name) + 0x00
+            [Byte[]] $length = [BitConverter]::GetBytes($Name.Count + 16)[1,0]
+            [String] $random = [String](1..2 | ForEach-Object {"{0:X2}" -f (Get-Random -Minimum 1 -Maximum 255)})
+            [Byte[]] $random = $random.Split(" ") | ForEach-Object{[Char][Convert]::ToInt16($_,16)}
+            [Byte[]] $transaction_ID = $random
+            $DNSQuery = New-Object System.Collections.Specialized.OrderedDictionary
+            $DNSQuery.Add("Length",$length)
+            $DNSQuery.Add("TransactionID",$transaction_ID)
+            $DNSQuery.Add("Flags",[Byte[]](0x01,0x00))
+            $DNSQuery.Add("Questions",[Byte[]](0x00,0x01))
+            $DNSQuery.Add("AnswerRRs",[Byte[]](0x00,0x00))
+            $DNSQuery.Add("AuthorityRRs",[Byte[]](0x00,0x00))
+            $DNSQuery.Add("AdditionalRRs",[Byte[]](0x00,0x00))
+            $DNSQuery.Add("Queries_Name",$name)
+            $DNSQuery.Add("Queries_Type",$type)
+            $DNSQuery.Add("Queries_Class",[Byte[]](0x00,0x01))
+            return $DNSQuery
+        }
+
+        Function Local:New-SOASerialNumberArray {
+            Param ([String] $Server, [String] $Zone)
+            $Zone = $Zone.ToLower()
+            $DNS_client = New-Object Net.Sockets.TCPClient
+            $DNS_client.Client.ReceiveTimeout = 3000
+            try {
+                $DNS_client.Connect($Server,"53")
+                $DNS_client_stream = $DNS_client.GetStream()
+                $DNS_client_receive = New-Object Byte[] 2048
+                $packet_DNSQuery = New-PacketDNSSOAQuery $Zone
+                [Byte[]] $DNS_client_send = @()
+                foreach($field in $packet_DNSQuery.Values) {
+                    $DNS_client_send += $field
+                }
+                $DNS_client_stream.Write($DNS_client_send,0,$DNS_client_send.Length) | Out-Null
+                $DNS_client_stream.Flush()
+                $DNS_client_stream.Read($DNS_client_receive,0,$DNS_client_receive.Length) | Out-Null
+                $DNS_client.Close()
+                $DNS_client_stream.Close()
+                if($DNS_client_receive[9] -eq 0) {
+                    Write-Error "[-] $Zone SOA record not found"
+                }
+                else {
+                    $DNS_reply_converted = [BitConverter]::ToString($DNS_client_receive)
+                    $DNS_reply_converted = $DNS_reply_converted -replace "-",""
+                    $SOA_answer_index = $DNS_reply_converted.IndexOf("C00C00060001")
+                    $SOA_answer_index = $SOA_answer_index / 2
+                    $SOA_length = $DNS_client_receive[($SOA_answer_index + 10)..($SOA_answer_index + 11)]
+                    [Array]::Reverse($SOA_length)
+                    $SOA_length = [BitConverter]::ToUInt16($SOA_length,0)
+                    [Byte[]] $SOA_serial_current_array = $DNS_client_receive[($SOA_answer_index + $SOA_length - 8)..($SOA_answer_index + $SOA_length - 5)]
+                    $SOA_serial_current = [BitConverter]::ToUInt32($SOA_serial_current_array[3..0],0) + $Increment
+                    [Byte[]] $SOA_serial_number_array = [BitConverter]::GetBytes($SOA_serial_current)[0..3]
+                }
+
+            }
+            catch {
+                Write-Error "[-] $Server did not respond on TCP port 53"
+            }
+            return ,$SOA_serial_number_array
+        }
+
+        Function Local:ConvertTo-DNSRecord {
+            Param (
+                [String] $Data,
+                [String] $Server,
+                [ValidateSet("A","AAAA","CNAME","DNAME","MX","NS","PTR","SRV","TXT")][String] $Type = "A",
+                [String] $Zone,
+                [Int] $TTL = 600,
+                [Switch] $Static
+            )
+            $SOASerialNumberArray = New-SOASerialNumberArray -Server $Server -Zone $Zone
+            switch ($Type) {
+                'A' {
+                    [Byte[]] $DNS_type = 0x01,0x00
+                    [Byte[]] $DNS_length = ([BitConverter]::GetBytes(($Data.Split(".")).Count))[0..1]
+                    [Byte[]] $DNS_data += ([Net.IPAddress][String]([Net.IPAddress] $Data)).GetAddressBytes()
+                }
+                'AAAA' {
+                    [Byte[]] $DNS_type = 0x1c,0x00
+                    [Byte[]] $DNS_length = ([BitConverter]::GetBytes(($Data -replace ":","").Length / 2))[0..1]
+                    [Byte[]] $DNS_data += ([Net.IPAddress][String]([Net.IPAddress] $Data)).GetAddressBytes()
+                }
+                'CNAME' {
+                    [Byte[]] $DNS_type = 0x05,0x00
+                    [Byte[]] $DNS_length = ([BitConverter]::GetBytes($Data.Length + 4))[0..1]
+                    [Byte[]] $DNS_data = $Data.Length + 2
+                    $DNS_data += ($Data.Split(".")).Count
+                    $DNS_data += New-DNSNameArray $Data
+                    $DNS_data += 0x00
+                }
+                'DNAME' {
+                    [Byte[]] $DNS_type = 0x27,0x00
+                    [Byte[]] $DNS_length = ([BitConverter]::GetBytes($Data.Length + 4))[0..1]
+                    [Byte[]] $DNS_data = $Data.Length + 2
+                    $DNS_data += ($Data.Split(".")).Count
+                    $DNS_data += New-DNSNameArray $Data
+                    $DNS_data += 0x00
+                }
+                'MX' {
+                    [Byte[]] $DNS_type = 0x0f,0x00
+                    [Byte[]] $DNS_length = ([BitConverter]::GetBytes($Data.Length + 6))[0..1]
+                    [Byte[]] $DNS_data = [Bitconverter]::GetBytes($Preference)[1,0]
+                    $DNS_data += $Data.Length + 2
+                    $DNS_data += ($Data.Split(".")).Count
+                    $DNS_data += New-DNSNameArray $Data
+                    $DNS_data += 0x00
+                }
+                'NS' {
+                    [Byte[]] $DNS_type = 0x02,0x00
+                    [Byte[]] $DNS_length = ([BitConverter]::GetBytes($Data.Length + 4))[0..1]
+                    [Byte[]] $DNS_data = $Data.Length + 2
+                    $DNS_data += ($Data.Split(".")).Count
+                    $DNS_data += New-DNSNameArray $Data
+                    $DNS_data += 0x00
+                }
+                'PTR' {
+                    [Byte[]] $DNS_type = 0x0c,0x00
+                    [Byte[]] $DNS_length = ([BitConverter]::GetBytes($Data.Length + 4))[0..1]
+                    [Byte[]] $DNS_data = $Data.Length + 2
+                    $DNS_data += ($Data.Split(".")).Count
+                    $DNS_data += New-DNSNameArray $Data
+                    $DNS_data += 0x00
+                }
+                'SRV' {
+                    [Byte[]] $DNS_type = 0x21,0x00
+                    [Byte[]] $DNS_length = ([BitConverter]::GetBytes($Data.Length + 10))[0..1]
+                    [Byte[]] $DNS_data = [Bitconverter]::GetBytes($Priority)[1,0]
+                    $DNS_data += [Bitconverter]::GetBytes($Weight)[1,0]
+                    $DNS_data += [Bitconverter]::GetBytes($Port)[1,0]
+                    $DNS_data += $Data.Length + 2
+                    $DNS_data += ($Data.Split(".")).Count
+                    $DNS_data += New-DNSNameArray $Data
+                    $DNS_data += 0x00
+                }
+                'TXT' {
+                    [Byte[]] $DNS_type = 0x10,0x00
+                    [Byte[]] $DNS_length = ([BitConverter]::GetBytes($Data.Length + 1))[0..1]
+                    [Byte[]] $DNS_data = $Data.Length
+                    $DNS_data += [Text.Encoding]::UTF8.GetBytes($Data)
+                }
+            }
+            [Byte[]] $DNS_TTL = [BitConverter]::GetBytes($TTL)
+            [Byte[]] $DNS_record = $DNS_length + $DNS_type + 0x05,0xF0,0x00,0x00 + $SOASerialNumberArray[0..3] + $DNS_TTL[3..0] + 0x00,0x00,0x00,0x00
+            if ($Static) {
+                $DNS_record += 0x00,0x00,0x00,0x00
+            }
+            else {
+                $timestamp = [Int64](([Datetime]::UtcNow)-(Get-Date "1/1/1601")).TotalHours
+                $timestamp = [BitConverter]::ToString([BitConverter]::GetBytes($timestamp))
+                $timestamp = $timestamp.Split("-") | ForEach-Object{[Convert]::ToInt16($_,16)}
+                $timestamp = $timestamp[0..3]
+                $DNS_record += $timestamp
+            }
+            $DNS_record += $DNS_data
+            return ,$DNS_record
+        }
+    }
+
+    Process {
+        try {
+            $rootDSE = Get-LdapRootDSE -Server $Server
+            $defaultNC = $rootDSE.defaultNamingContext[0]
+            $domain = $defaultNC -replace 'DC=' -replace ',','.'
+        }
+        catch {
+            Write-Error "Domain controller unreachable" -ErrorAction Stop
+        }
+        if (-not $ZoneName) {
+            $ZoneName = $domain
+        }
+        $distinguishedName = "DC=$Name,DC=$ZoneName,CN=MicrosoftDNS,DC=DomainDNSZones,$defaultNC"
+        $dnsRecord = ConvertTo-DNSRecord -Server $Server -Type $RecordType -Data $Data -Zone $ZoneName -Static:$Static
+        $properties = @{dnsRecord=$dnsRecord}
+        $newObject = New-LdapObject -Server $Server -SSL:$SSL -DistinguishedName $distinguishedName -Class 'dnsNode' -Properties $properties -Credential $Credential -ErrorAction Stop
+        Write-Host "[+] DNS record object created: $newObject"
+    }
+}
+
 Function Set-UserPassword {	
 <#
 .SYNOPSIS
