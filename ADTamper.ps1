@@ -62,8 +62,8 @@ Function New-UserAccount {
 
         if (-not $PSBoundParameters.ContainsKey('Password')) {
             $passwordSecure = Read-Host "Password" -AsSecureString
-            $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($passwordSecure)
-            $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+            $BSTR = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($passwordSecure)
+            $Password = [Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
         }
     }
 
@@ -80,7 +80,7 @@ Function New-UserAccount {
         $passwordBytes = [Text.Encoding]::Unicode.GetBytes('"' + $Password + '"')
         $properties = @{sAMAccountName=$SamAccountName; userAccountControl=$uac; unicodePwd=$passwordBytes}
         $newObject = New-LdapObject -Server $Server -SSL:$SSL -DistinguishedName $distinguishedName -Class 'User' -Properties $properties -Credential $Credential -ErrorAction Stop
-        Write-Host "[+] User created: $newObject"
+        Write-Host "[+] User object created: $newObject"
     }
 }
 
@@ -148,8 +148,8 @@ Function New-ComputerAccount {
 
         if (-not $PSBoundParameters.ContainsKey('Password')) {
             $passwordSecure = Read-Host "Password" -AsSecureString
-            $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($passwordSecure)
-            $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+            $BSTR = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($passwordSecure)
+            $Password = [Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
         }
     }
 
@@ -170,7 +170,7 @@ Function New-ComputerAccount {
         $passwordBytes = [Text.Encoding]::Unicode.GetBytes('"' + $Password + '"')
         $properties = @{sAMAccountName=$SamAccountName; userAccountControl=$uac; unicodePwd=$passwordBytes; dnsHostName=$dnsHostName; ServicePrincipalName=$spn}
         $newObject = New-LdapObject -Server $Server -SSL:$SSL -DistinguishedName $distinguishedName -Class 'Computer' -Properties $properties -Credential $Credential -ErrorAction Stop
-        Write-Host "[+] Computer created: $newObject"
+        Write-Host "[+] Computer object created: $newObject"
     }
 }
 
@@ -244,8 +244,8 @@ Function New-RogueAccount {
 
         if (-not $PSBoundParameters.ContainsKey('Password')) {
             $passwordSecure = Read-Host "Password" -AsSecureString
-            $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($passwordSecure)
-            $Password = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+            $BSTR = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($passwordSecure)
+            $Password = [Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
         }
     }
 
@@ -254,11 +254,11 @@ Function New-RogueAccount {
         $sd.SetSecurityDescriptorSddlForm("D:P(A;CI;GA;;;WD)", "Access")
         $ba = $sd.GetSecurityDescriptorBinaryForm()
         $containerClass = 'msExchStorageGroup'
-        $containerRDN = "CN=$(-join ((0x41..0x5A) + (0x61..0x7A) | Get-Random -Count 11 | %{[char]$_}))"
+        $containerRDN = "CN=$(-join ((0x41..0x5A) + (0x61..0x7A) | Get-Random -Count 11 | %{[char] $_}))"
         $distinguishedName = "$containerRDN,$($computer.DistinguishedName)"
         $properties = @{nTSecurityDescriptor=$ba}
         $newContainer = New-LdapObject -Server $Server -SSL:$SSL -DistinguishedName $distinguishedName -Class $containerClass -Properties $properties -Credential $Credential
-        Write-Host "[+] Container created: $newContainer"
+        Write-Host "[+] Container object created: $newContainer"
 
         $objectRDN = "CN=$SamAccountName".TrimEnd('$')
         $distinguishedName = "$objectRDN,$newContainer"
@@ -283,7 +283,7 @@ Function New-RogueAccount {
         $passwordBytes = [Text.Encoding]::Unicode.GetBytes('"' + $Password + '"')
         $properties = @{sAMAccountName=$SamAccountName; userAccountControl=$uac; unicodePwd=$passwordBytes}
         $newObject = New-LdapObject -Server $Server -SSL:$SSL -DistinguishedName $distinguishedName -Class $Class -Properties $properties -Credential $Credential -ErrorAction Stop
-        Write-Host "[+] $Class created: $newObject"
+        Write-Host "[+] $Class object created: $newObject"
     }
 }
 
@@ -361,13 +361,13 @@ public static extern bool NetUserChangePassword(string domain, string username, 
 
     if ((-not $Reset) -and (-not $PSBoundParameters.ContainsKey('CurrentPassword'))) {
         $currentPasswordSecure = Read-Host "Current password" -AsSecureString
-        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($currentPasswordSecure)
-        $CurrentPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+        $BSTR = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($currentPasswordSecure)
+        $CurrentPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
     }
     if (-not $PSBoundParameters.ContainsKey('NewPassword')) {
         $newPasswordSecure = Read-Host "New password" -AsSecureString
-        $BSTR = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($newPasswordSecure)
-        $NewPassword = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+        $BSTR = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($newPasswordSecure)
+        $NewPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
     }
 
     if (-not $Reset) {
@@ -848,6 +848,117 @@ Function Set-LdapObjectAcl {
     }
 }
 
+Function Remove-LdapObject {
+<#
+.SYNOPSIS
+    Remove a given Active Directory object.
+
+    Author: Timothee MENOCHET (@_tmenochet)
+
+.DESCRIPTION
+    Remove-LdapObject removes a given Active Directory object.
+
+.PARAMETER Server
+    Specifies the domain controller to query.
+
+.PARAMETER SSL
+    Use SSL connection to LDAP server.
+
+.PARAMETER Credential
+    Specifies the privileged account to use.
+
+.PARAMETER DistinguishedName
+    Specifies the distinguished name of the object to remove.
+
+.PARAMETER Confirm
+    Enables or disables warning prompt.
+
+.EXAMPLE
+    PS C:\> Remove-LdapObject -DistinguishedName "CN=testuser,CN=Users,DC=ADATUM,DC=CORP"
+#>
+
+    [CmdletBinding()]
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server = $Env:USERDNSDOMAIN,
+
+        [Switch]
+        $SSL,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $DistinguishedName,
+
+        [ValidateNotNullOrEmpty()]
+        [Management.Automation.PSCredential]
+        [Management.Automation.Credential()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [bool]
+        $Confirm = $false
+    )
+
+    if (-not $Confirm) {
+        $confirm_answer = Read-Host -Prompt "Are you sure you want to delete object $($DistinguishedName)? (Y/N)"
+        if($confirm_answer -ne 'Y') {
+            return
+        }
+    }
+
+    if ($SSL) {
+        try {
+            $rootDSE = Get-LdapRootDSE -Server $Server
+            $defaultNC = $rootDSE.defaultNamingContext[0]
+            $domain = $defaultNC -replace 'DC=' -replace ',','.'
+            [Reflection.Assembly]::LoadWithPartialName("System.DirectoryServices.Protocols") | Out-Null
+            $connection = New-Object -TypeName DirectoryServices.Protocols.LdapConnection -ArgumentList "$($Server):636"
+            $connection.SessionOptions.SecureSocketLayer = $true
+            $connection.SessionOptions.VerifyServerCertificate = {$true}
+            $connection.SessionOptions.DomainName = $domain
+            $connection.AuthType = [DirectoryServices.Protocols.AuthType]::Negotiate
+            if ($Credential.UserName) {
+                $connection.Bind($Credential)
+            }
+            else {
+                $connection.Bind()
+            }
+
+            Write-Verbose "Attempting to remove object $DistinguishedName..."
+            $request = New-Object -TypeName DirectoryServices.Protocols.DeleteRequest
+            $request.DistinguishedName = $DistinguishedName
+            $response = $connection.SendRequest($request)
+            if ($response.ResultCode -eq 'Success') {
+                Write-Verbose "Object removed: $DistinguishedName"
+            }
+        }
+        catch {
+            Write-Error $_
+        }
+    }
+    else {
+        try {
+            $RDN = $DistinguishedName.Split(',')[0]
+            $searchBase = $DistinguishedName -replace "^$($RDN),"
+            $filter = "(distinguishedName=$DistinguishedName)"
+            $object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $searchBase -Filter $filter -Properties 'distinguishedName' -Credential $Credential -Raw
+            Write-Verbose "Attempting to remove object $DistinguishedName..."
+            $entry = $object.GetDirectoryEntry()
+            $entry.PsBase.DeleteTree()
+            Write-Host "[*] Object removed: $DistinguishedName"
+        }
+        catch {
+            Write-Error $_
+        }
+        finally {
+            if ($entry.Path) {
+                $entry.Close()
+            }
+        }
+    }
+}
+
 Function Local:Get-LdapCurrentUser {
     Param (
         [String]
@@ -1006,7 +1117,7 @@ Function Local:Get-LdapObject {
                             $results += $entry
                         }
                     }
-                    $pageResponseControl = [DirectoryServices.Protocols.PageResultResponseControl]$response.Controls[0]
+                    $pageResponseControl = [DirectoryServices.Protocols.PageResultResponseControl] $response.Controls[0]
                     if ($pageResponseControl.Cookie.Length -eq 0) {
                         break
                     }
@@ -1020,7 +1131,7 @@ Function Local:Get-LdapObject {
                     $searcher = New-Object -TypeName DirectoryServices.DirectorySearcher($domainObject)
                 }
                 else {
-                    $searcher = New-Object -TypeName DirectoryServices.DirectorySearcher([ADSI]$adsPath)
+                    $searcher = New-Object -TypeName DirectoryServices.DirectorySearcher([ADSI] $adsPath)
                 }
                 $searcher.SearchScope = $SearchScope
                 $searcher.PageSize = $PageSize
@@ -1173,7 +1284,7 @@ Function Local:Get-LdapObjectAcl {
                             $results += $entry
                         }
                     }
-                    $pageResponseControl = [DirectoryServices.Protocols.PageResultResponseControl]$response.Controls[0]
+                    $pageResponseControl = [DirectoryServices.Protocols.PageResultResponseControl] $response.Controls[0]
                     if ($pageResponseControl.Cookie.Length -eq 0) {
                         break
                     }
@@ -1187,7 +1298,7 @@ Function Local:Get-LdapObjectAcl {
                     $searcher = New-Object -TypeName DirectoryServices.DirectorySearcher($domainObject)
                 }
                 else {
-                    $searcher = New-Object -TypeName DirectoryServices.DirectorySearcher([ADSI]$adsPath)
+                    $searcher = New-Object -TypeName DirectoryServices.DirectorySearcher([ADSI] $adsPath)
                 }
                 $searcher.SearchScope = $SearchScope
                 $searcher.PageSize = $PageSize

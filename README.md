@@ -12,4 +12,5 @@ Set-UserPassword                -   modifies the password of a given Active Dire
 Set-LdapObject                  -   modifies properties for a given Active Directory object (e.g. members of a group)
 Set-LdapObjectOwner             -   modifies the owner for a given Active Directory object
 Set-LdapObjectAcl               -   adds or removes an ACL for a given Active Directory object
+Remove-LdapObject               -   removes a given Active Directory object.
 ```
