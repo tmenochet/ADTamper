@@ -663,6 +663,251 @@ public static extern bool NetUserChangePassword(string domain, string username, 
     Write-Host "[*] Password change succeeded for $SamAccountName"
 }
 
+Function Set-KerberosDelegation {
+<#
+.SYNOPSIS
+    Configure Kerberos delegations.
+
+    Author: Timothee MENOCHET (@_tmenochet)
+
+.DESCRIPTION
+    Set-KerberosDelegation adds or removes a Kerberos delegation for a given Active Directory  account.
+    The specified Kerberos delegation can be unconstrained, constrained (with or without protocol transition) or resource-based constrained (RBCD).
+
+.PARAMETER Server
+    Specifies the domain controller to query.
+
+.PARAMETER Credential
+    Specifies the privileged account to use for password reset.
+
+.PARAMETER SSL
+    Use SSL connection to LDAP server for password reset.
+
+.PARAMETER SamAccountName
+    Specifies the Security Account Manager (SAM) account name of the account that are going to be allowed to delegate.
+
+.PARAMETER Unconstrained
+    Configures Unconstrained delegation for the specified account.
+
+.PARAMETER Constrained
+    Configures Constrained delegation for the specified account.
+
+.PARAMETER ProtocolTransition
+    Enables Protocol Transition for the Constrained delegation.
+
+.PARAMETER TargetSPN
+    Specifies the Service Principal Name (SPN) of the service targeted by the constrained delegation.
+
+.PARAMETER RBCD
+    Configures Resource-Based Constrained delegation for the specified account.
+
+.PARAMETER TargetDN
+    Specifies the DistinguishedName (DN) of the service targeted by the RBCD delegation.
+
+.PARAMETER Operation
+    Specifies whether the specified delegation will be added or removed, defaults to 'Add'.
+
+.EXAMPLE
+    PS C:\> Set-KerberosDelegation -Server DC.ADATUM.CORP -SamAccountName 'testcomputer$' -Unconstrained
+
+.EXAMPLE
+    PS C:\> Set-KerberosDelegation -Server DC.ADATUM.CORP -SamAccountName 'testcomputer$' -Constrained -TargetSPN 'CIFS/WS10.ADATUM.CORP' -ProtocolTransition
+
+.EXAMPLE
+    PS C:\> Set-KerberosDelegation -Server DC.ADATUM.CORP -SamAccountName 'testcomputer$' -RBCD -TargetDN 'CN=WS10,CN=Computers,DC=ADATUM,DC=CORP'
+#>
+
+    [CmdletBinding()]
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server = $Env:USERDNSDOMAIN,
+
+        [Switch]
+        $SSL,
+
+        [ValidateNotNullOrEmpty()]
+        [Management.Automation.PSCredential]
+        [Management.Automation.Credential()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Parameter(Mandatory = $True)]
+        [String]
+        $SamAccountName,
+
+        [Switch]
+        $Unconstrained,
+
+        [Parameter(ParameterSetName = 'ConstrainedDelegation')]
+        [Switch]
+        $Constrained,
+
+        [Switch]
+        $ProtocolTransition,
+
+        [Parameter(Mandatory = $True, ParameterSetName = 'ConstrainedDelegation')]
+        [String]
+        $TargetSPN,
+
+        [Parameter(ParameterSetName = 'RBCDDelegation')]
+        [Switch]
+        $RBCD,
+
+        [Parameter(Mandatory = $True, ParameterSetName = 'RBCDDelegation')]
+        [String]
+        $TargetDN,
+
+        [ValidateSet('Add', 'Remove')]
+        [String]
+        $Operation = 'Add'
+    )
+
+    Begin {
+        # Get specified pincipal identity and target service objects
+        $filter = "(sAMAccountName=$SamAccountName)"
+        $properties = 'objectSid','distinguishedName','servicePrincipalName','userAccountControl','msDS-AllowedToDelegateTo'
+        $principal = Get-LdapObject -Server $Server -SSL:$SSL -Filter $filter -Properties $properties -Credential $Credential
+        if (-not $principal) {
+            Write-Error "The account $SamAccountName does not exist."
+            continue
+        }
+        if ($RBCD) {
+            $filter = "(DistinguishedName=$TargetDN)"
+            $properties = 'distinguishedName','msDS-AllowedToActOnBehalfOfOtherIdentity'
+            $targetService = Get-LdapObject -Server $Server -SSL:$SSL -Filter $filter -Properties $properties -Credential $Credential
+            if (-not $targetService) {
+                Write-Error "The account $TargetDN does not exist."
+                continue
+            }
+        }
+
+        # Check UserAccountControl
+        if ($Unconstrained) {
+            # TRUSTED_FOR_DELEGATION flag
+            if (($Operation -eq 'Add') -and ($principal.userAccountControl -band 524288) ) {
+                Write-Error "Unconstrained delegation is already configured for the account $SamAccountName."
+                continue
+            }
+            elseif (($Operation -eq 'Remove') -and -not ($principal.userAccountControl -band 524288)) {
+                Write-Error "Unconstrained delegation is not configured for the account $SamAccountName."
+                continue
+            }
+        }
+        if ($ProtocolTransition) {
+            # TRUSTED_TO_AUTHENTICATE_FOR_DELEGATION flag
+            if (($Operation -eq 'Add') -and ($principal.userAccountControl -band 16777216) ) {
+                Write-Error "Protocol Transition is already configured for the account $SamAccountName."
+                continue
+            }
+            elseif (($Operation -eq 'Remove') -and -not ($principal.userAccountControl -band 16777216)) {
+                Write-Error "Protocol Transition is not configured for the account $SamAccountName."
+                continue
+            }
+        }
+
+        # Check servicePrincipalName
+        if ($Constrained -or $ProtocolTransition) {
+            if (-not $principal.servicePrincipalName) {
+                Write-Warning "The account $SamAccountName does not have ServicePrincipalName attribute set. Therefore, the delegation will not take effect."
+            }
+        }
+
+        # Check msDS-AllowedToDelegateTo
+        if ($Constrained -and $principal.'msDS-AllowedToDelegateTo') {
+            if (($Operation -eq 'Add') -and ($principal.'msDS-AllowedToDelegateTo'.Contains($TargetSPN))) {
+                Write-Error "Constrained delegation targetting $TargetSPN is already configured for the account $SamAccountName."
+                continue
+            }
+            if (($Operation -eq 'Remove') -and -not ($principal.'msDS-AllowedToDelegateTo'.Contains($TargetSPN))) {
+                Write-Error "Constrained delegation targetting $TargetSPN is not configured for the account $SamAccountName."
+                continue
+            }
+        }
+
+        # Check msDS-AllowedToActOnBehalfOfOtherIdentity
+        if ($RBCD) {
+            $principalSid = (New-Object Security.Principal.SecurityIdentifier $principal.objectSid,0).Value
+            $principalSids = @()
+            $currentSddlString = ""
+            if ($ataobooi = $targetService.'msDS-AllowedToActOnBehalfOfOtherIdentity') {
+                $sd = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $ataobooi, 0
+                $sd.DiscretionaryAcl | ForEach-Object {
+                    $principalSids += $_.SecurityIdentifier.ToString()
+                }
+                if (($Operation -eq 'Add') -and $principalSids.Contains($principalSid)) {
+                    Write-Error "Resource-Based Constrained delegation allowing $SamAccountName is already configured for $TargetDN."
+                    continue
+                }
+                if (($Operation -eq 'Remove') -and -not $principalSids.Contains($principalSid)) {
+                    Write-Error "Resource-Based Constrained delegation allowing $SamAccountName is not configured for $TargetDN."
+                    continue
+                }
+                $currentSddlString = (New-Object Management.ManagementClass Win32_SecurityDescriptorHelper).BinarySDToSDDL($ataobooi).SDDL
+            }
+        }
+    }
+
+    Process {
+        if ($Unconstrained) {
+            $userAccountControl = $($principal.userAccountControl) -bxor 524288
+            Write-Verbose "Current UserAccountControl: $($principal.userAccountControl)"
+            Write-Verbose "New UserAccountControl: $userAccountControl"
+            $properties = @{"userAccountControl"=$userAccountControl}
+            Set-LdapObject -Server $Server -SSL:$SSL -DistinguishedName $principal.distinguishedName -Properties $properties -Operation Replace -Credential $Credential
+        }
+        if ($ProtocolTransition) {
+            $userAccountControl = $($principal.userAccountControl) -bxor 16777216
+            Write-Verbose "Current UserAccountControl: $($principal.userAccountControl)"
+            Write-Verbose "New UserAccountControl: $userAccountControl"
+            $properties = @{"userAccountControl"=$userAccountControl}
+            Set-LdapObject -Server $Server -SSL:$SSL -DistinguishedName $principal.distinguishedName -Properties $properties -Operation Replace -Credential $Credential
+        }
+        if ($Constrained) {
+            $properties = @{"msDS-AllowedToDelegateTo"=$TargetSPN}
+            Set-LdapObject -Server $Server -SSL:$SSL -DistinguishedName $principal.distinguishedName -Properties $properties -Operation $Operation -Credential $Credential
+        }
+        if ($RBCD) {
+            $sddlString = "(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;$principalSid)"
+            switch ($Operation) {
+                "Add" {
+                    if ($currentSddlString) {
+                        $sddlString = $currentSddlString + $sddlString
+                    }
+                    else {
+                        $sddlString = 'O:BAD:' + $sddlString
+                    }
+                }
+                "Remove" {
+                    if ($currentSddlString -eq $sddlString) {
+                        $sddlString = ""
+                    }
+                    else {
+                        $sddlString = $currentSddlString.Replace($sddlString, "")
+                    }
+                }
+            }
+            Write-Verbose "Current SDDL: $currentSddlString"
+            Write-Verbose "New SDDL: $sddlString"
+            if ($sddlString) {
+                # Restore msDS-AllowedToActOnBehalfOfOtherIdentity
+                $SD = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $sddlString
+                $sdBytes = New-Object byte[] ($SD.BinaryLength)
+                $SD.GetBinaryForm($sdBytes, 0)
+                $properties = @{'msDS-AllowedToActOnBehalfOfOtherIdentity'=$sdBytes}
+                Set-LdapObject -Server $Server -SSL:$SSL -DistinguishedName $TargetDN -Properties $properties -Operation Replace -Credential $Credential
+            }
+            else {
+                # Remove msDS-AllowedToActOnBehalfOfOtherIdentity
+                $SD = New-Object Security.AccessControl.RawSecurityDescriptor -ArgumentList $currentSddlString
+                $sdBytes = New-Object byte[] ($SD.BinaryLength)
+                $SD.GetBinaryForm($sdBytes, 0)
+                $properties = @{'msDS-AllowedToActOnBehalfOfOtherIdentity'=$sdBytes}
+                Set-LdapObject -Server $Server -SSL:$SSL -DistinguishedName $TargetDN -Properties $properties -Operation Remove -Credential $Credential
+            }
+        }
+    }
+}
+
 Function Set-LdapObject {
 <#
 .SYNOPSIS
@@ -689,7 +934,7 @@ Function Set-LdapObject {
     Specifies the properties of the object to modify.
 
 .PARAMETER Operation
-    Specifies whether the specified properties must be added, replaced or removed, defaults to 'Add'.
+    Specifies whether the specified properties will be added, replaced or removed. Defaults to 'Add'.
 
 .EXAMPLE
     PS C:\> Set-LdapObject -Server DC.ADATUM.CORP -DistinguishedName "CN=Domain Admins,CN=Users,DC=ADATUM,DC=CORP" -Properties @{member="CN=testuser,CN=Users,DC=ADATUM,DC=CORP"} -Operation Add
@@ -970,7 +1215,7 @@ Function Set-LdapObjectAcl {
     Specifies the rights of the object to add or remove, default to all extended rights.
 
 .PARAMETER Operation
-    Specifies wether the specified properties must be added or replaced, defaults to 'Add'.
+    Specifies whether the specified properties will be added or removed, defaults to 'Add'.
 
 .EXAMPLE
     PS C:\> $sid = (New-Object Security.Principal.SecurityIdentifier (Get-LdapObject -Server DC.ADATUM.CORP -Filter "(sAMAccountName=testuser)" -Properties objectSid).objectSid,0).Value
