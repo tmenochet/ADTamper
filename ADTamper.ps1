@@ -339,14 +339,17 @@ Function New-DomainDnsRecord {
         [Management.Automation.Credential()]
         $Credential = [Management.Automation.PSCredential]::Empty,
 
+        [Parameter(Mandatory = $True)]
         [ValidateSet("A","AAAA","CNAME","DNAME","MX","NS","PTR","SRV","TXT")]
         [String]
         $RecordType = "A",
 
+        [Parameter(Mandatory = $True)]
         [ValidateNotNullOrEmpty()]
         [String]
         $Name,
 
+        [Parameter(Mandatory = $True)]
         [ValidateScript({$_.Length -le 255})]
         [String]
         $Data,
@@ -668,7 +671,7 @@ Function Set-LdapObject {
     Author: Timothee MENOCHET (@_tmenochet)
 
 .DESCRIPTION
-    Set-LdapObject adds or replaces specified properties for an Active Directory object.
+    Set-LdapObject adds, replaces or removes specified properties for an Active Directory object.
 
 .PARAMETER Server
     Specifies the domain controller to query.
@@ -686,7 +689,7 @@ Function Set-LdapObject {
     Specifies the properties of the object to modify.
 
 .PARAMETER Operation
-    Specifies wether the specified properties must be added or replaced, defaults to 'Add'.
+    Specifies whether the specified properties must be added, replaced or removed, defaults to 'Add'.
 
 .EXAMPLE
     PS C:\> Set-LdapObject -Server DC.ADATUM.CORP -DistinguishedName "CN=Domain Admins,CN=Users,DC=ADATUM,DC=CORP" -Properties @{member="CN=testuser,CN=Users,DC=ADATUM,DC=CORP"} -Operation Add
@@ -710,7 +713,7 @@ Function Set-LdapObject {
         [hashtable]
         $Properties,
 
-        [ValidateSet('Add', 'Replace')]
+        [ValidateSet('Add', 'Replace', 'Remove')]
         [String]
         $Operation = 'Add',
 
@@ -743,14 +746,14 @@ Function Set-LdapObject {
             $request = New-Object -TypeName DirectoryServices.Protocols.ModifyRequest
             $request.DistinguishedName = $DistinguishedName
             switch ($Operation) {
-                'Add'       { $operation = [DirectoryServices.Protocols.DirectoryAttributeOperation]::Add }
-                'Replace'   { $operation = [DirectoryServices.Protocols.DirectoryAttributeOperation]::Replace }
-                #'Delete'    { $operation = [DirectoryServices.Protocols.DirectoryAttributeOperation]::Delete }
+                'Add'       { $op = [DirectoryServices.Protocols.DirectoryAttributeOperation]::Add }
+                'Replace'   { $op = [DirectoryServices.Protocols.DirectoryAttributeOperation]::Replace }
+                'Remove'    { $op = [DirectoryServices.Protocols.DirectoryAttributeOperation]::Delete }
             }
             foreach ($property in $Properties.GetEnumerator()) {
                 $modification = New-Object -TypeName DirectoryServices.Protocols.DirectoryAttributeModification
                 $modification.Name = $property.Key
-                $modification.Operation = $operation
+                $modification.Operation = $op
                 $modification.Add($property.Value) | Out-Null
                 $request.Modifications.Add($modification) | Out-Null
             }
@@ -784,13 +787,13 @@ Function Set-LdapObject {
                 else {
                     switch ($Operation) {
                         'Add' { 
-                            $values = @()
-                            $values += $entry.$($property.Key)
-                            $values += $property.Value
-                            $entry.Put($property.Key, $values)
+                            $entry.Properties[$property.Key].Add($property.Value) | Out-Null
                         }
                         'Replace' {
                             $entry.Put($property.Key, $property.Value)
+                        }
+                        'Remove' {
+                            $entry.Properties[$property.Key].Remove($property.Value)
                         }
                     }
                 }
@@ -1435,7 +1438,7 @@ Function Local:Get-LdapObject {
                     # Convert DirectoryAttribute object (LDAPS results)
                     $p = @{}
                     foreach ($a in $_.Attributes.Keys | Sort-Object) {
-                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'securityidentifier') -or ($a -eq 'msds-allowedtoactonbehalfofotheridentity') -or ($a -eq 'usercertificate') -or ($a -eq 'ntsecuritydescriptor') -or ($a -eq 'logonhours')) {
+                        if (($a -eq 'objectsid') -or ($a -eq 'sidhistory') -or ($a -eq 'objectguid') -or ($a -eq 'securityidentifier') -or ($a -eq 'msDS-AllowedToActOnBehalfOfOtherIdentity') -or ($a -eq 'usercertificate') -or ($a -eq 'ntsecuritydescriptor') -or ($a -eq 'logonhours')) {
                             $p[$a] = $_.Attributes[$a]
                         }
                         elseif ($a -eq 'dnsrecord') {
