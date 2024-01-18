@@ -322,7 +322,7 @@ Function New-DomainDnsRecord {
     Creates a static record instead of a dynamic one.
 
 .EXAMPLE
-    PS C:\> New-DomainDnsRecord -Server DC.ADATUM.CORP -Credential 'ADATUM\testadmin' -DnsName test -DnsData "192.168.1.200"
+    PS C:\> New-DomainDnsRecord -Server DC.ADATUM.CORP -Credential 'ADATUM\testadmin' -Name test -Data "192.168.1.200"
 #>
 
     [CmdletBinding()]
@@ -339,7 +339,6 @@ Function New-DomainDnsRecord {
         [Management.Automation.Credential()]
         $Credential = [Management.Automation.PSCredential]::Empty,
 
-        [Parameter(Mandatory = $True)]
         [ValidateSet("A","AAAA","CNAME","DNAME","MX","NS","PTR","SRV","TXT")]
         [String]
         $RecordType = "A",
@@ -678,13 +677,13 @@ Function Set-KerberosDelegation {
     Specifies the domain controller to query.
 
 .PARAMETER Credential
-    Specifies the privileged account to use for password reset.
+    Specifies the privileged account to use for LDAP connection.
 
 .PARAMETER SSL
-    Use SSL connection to LDAP server for password reset.
+    Use SSL connection to LDAP server.
 
 .PARAMETER SamAccountName
-    Specifies the Security Account Manager (SAM) account name of the account that are going to be allowed to delegate.
+    Specifies the Security Account Manager (SAM) account name of the account that is going to be allowed to delegate.
 
 .PARAMETER Unconstrained
     Configures Unconstrained delegation for the specified account.
@@ -1454,7 +1453,7 @@ Function Remove-LdapObject {
             $request.DistinguishedName = $DistinguishedName
             $response = $connection.SendRequest($request)
             if ($response.ResultCode -eq 'Success') {
-                Write-Verbose "Object removed: $DistinguishedName"
+                Write-Host "Object removed: $DistinguishedName"
             }
         }
         catch {
@@ -1466,11 +1465,15 @@ Function Remove-LdapObject {
             $RDN = $DistinguishedName.Split(',')[0]
             $searchBase = $DistinguishedName -replace "^$($RDN),"
             $filter = "(distinguishedName=$DistinguishedName)"
-            $object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $searchBase -Filter $filter -Properties 'distinguishedName' -Credential $Credential -Raw
-            Write-Verbose "Attempting to remove object $DistinguishedName..."
-            $entry = $object.GetDirectoryEntry()
-            $entry.PsBase.DeleteTree()
-            Write-Host "[*] Object removed: $DistinguishedName"
+            if ($object = Get-LdapObject -Server $Server -SSL:$SSL -SearchBase $searchBase -Filter $filter -Properties 'distinguishedName' -Credential $Credential -Raw) {
+                Write-Verbose "Attempting to remove object $DistinguishedName..."
+                $entry = $object.GetDirectoryEntry()
+                $entry.PsBase.DeleteTree()
+                Write-Host "[*] Object removed: $DistinguishedName"
+            }
+            else {
+                Write-Error "The object does not exist."
+            }
         }
         catch {
             Write-Error $_
