@@ -1844,6 +1844,9 @@ Function Set-LdapObjectAcl {
         [String]
         $Rights = 'AllExtended',
 
+        [Switch]
+        $Inheritance,
+
         [ValidateSet('Add', 'Remove')]
         [String]
         $Operation = 'Add',
@@ -1855,7 +1858,12 @@ Function Set-LdapObjectAcl {
     )
 
     $principal = [Security.Principal.IdentityReference] $PrincipalSID
-    $inheritanceType = [DirectoryServices.ActiveDirectorySecurityInheritance] 'None'
+    if ($Inheritance) {
+        $inheritanceType = [DirectoryServices.ActiveDirectorySecurityInheritance] 'All'
+    }
+    else {
+        $inheritanceType = [DirectoryServices.ActiveDirectorySecurityInheritance] 'None'
+    }
     $controlType = [Security.AccessControl.AccessControlType] 'Allow'
 
     $GUIDs = switch ($Rights) {
